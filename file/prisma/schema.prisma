@@ -15,6 +15,7 @@ model User {
 
   files          File[]
   googleAccounts GoogleAccount[]
+  folders        Folder[]
 }
 
 model GoogleAccount {
@@ -41,6 +42,17 @@ model GoogleAccount {
   updatedAt DateTime @updatedAt
 
   files File[] @relation("GoogleAccountFiles")
+}
+
+model Folder {
+  id        String   @id @default(cuid())
+  name      String
+  createdAt DateTime @default(now())
+
+  userId String
+  user   User   @relation(fields: [userId], references: [id])
+
+  @@unique([userId, name])
 }
 
 model File {

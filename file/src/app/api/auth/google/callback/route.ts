@@ -1,6 +1,7 @@
 import { google } from "googleapis";
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
+import { createSession, getSessionUserId } from "@/lib/auth";
 
 export async function GET(req: NextRequest) {
   try {
@@ -44,21 +45,45 @@ export async function GET(req: NextRequest) {
       );
     }
 
-    // Find or create our application user
-    const user = await prisma.user.upsert({
-      where: {
-        email: data.email,
-      },
-      update: {
-        name: data.name,
-      },
-      create: {
-        email: data.email,
-        name: data.name,
-      },
-    });
+    // Check if user is currently logged in via session
+    const currentUserId = await getSessionUserId();
 
-    // Find or create the Google account
+    let user = null;
+    if (currentUserId) {
+      user = await prisma.user.findUnique({
+        where: { id: currentUserId },
+      });
+    }
+
+    // If not logged in, check if this Google account is already linked to an existing user
+    if (!user) {
+      const existingGoogleAccount = await prisma.googleAccount.findUnique({
+        where: { email: data.email },
+        include: { user: true },
+      });
+
+      if (existingGoogleAccount) {
+        user = existingGoogleAccount.user;
+      }
+    }
+
+    // If still no user, find or create application user by email
+    if (!user) {
+      user = await prisma.user.upsert({
+        where: {
+          email: data.email,
+        },
+        update: {
+          name: data.name,
+        },
+        create: {
+          email: data.email,
+          name: data.name,
+        },
+      });
+    }
+
+    // Find or create the Google account linked to this user
     const account = await prisma.googleAccount.upsert({
       where: {
         email: data.email,
@@ -87,20 +112,33 @@ export async function GET(req: NextRequest) {
       },
     });
 
-    return NextResponse.json({
-      success: true,
+    // Fetch storage quota from Google Drive
+    try {
+      const drive = google.drive({ version: "v3", auth: oauth2Client });
+      const about = await drive.about.get({ fields: "storageQuota" });
+      const quota = about.data.storageQuota;
+      if (quota) {
+        await prisma.googleAccount.update({
+          where: { id: account.id },
+          data: {
+            totalStorage: quota.limit ? BigInt(quota.limit) : null,
+            usedStorage: quota.usage ? BigInt(quota.usage) : null,
+          },
+        });
+      }
+    } catch (quotaErr) {
+      console.error("Failed to fetch storage quota during login:", quotaErr);
+    }
 
-      user: {
-        id: user.id,
-        email: user.email,
-        name: user.name,
-      },
+    await createSession(user.id);
 
-      googleAccount: {
-        id: account.id,
-        email: account.email,
-      },
+    console.log("LOGIN SUCCESS:", {
+      userId: user.id,
+      googleAccountId: account.id,
     });
+
+    // Successful login → go to homepage
+    return NextResponse.redirect(new URL("/", req.url));
   } catch (error) {
     console.error("GOOGLE CALLBACK ERROR:", error);
 

@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { Readable } from "stream";
-import { getGoogleDriveClient } from "@/lib/googleDrive";
+import { getGoogleDriveClient, syncGoogleAccountStorage } from "@/lib/googleDrive";
 import { prisma } from "@/lib/prisma";
 
 export async function POST(req: NextRequest) {
@@ -61,6 +61,9 @@ export async function POST(req: NextRequest) {
         googleAccountId: account.id,
       },
     });
+
+    // Refresh Google Drive quota in background
+    syncGoogleAccountStorage(account.id, drive).catch(console.error);
 
     return NextResponse.json({
       success: true,
