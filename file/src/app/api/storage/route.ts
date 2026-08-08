@@ -1,9 +1,15 @@
 import { NextResponse } from "next/server";
 import { getGoogleDriveClient } from "@/lib/googleDrive";
+import { getSessionUserId } from "@/lib/auth";
 
 export async function GET() {
   try {
-    const { drive } = await getGoogleDriveClient();
+    const userId = await getSessionUserId();
+    if (!userId) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
+
+    const { drive } = await getGoogleDriveClient({ userId });
 
     const response = await drive.about.get({
       fields: "storageQuota",

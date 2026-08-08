@@ -1,23 +1,7 @@
 import { redirect } from "next/navigation";
 import { getSessionUserId } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
-
-function formatBytes(bytes: bigint | number) {
-  const value = Number(bytes);
-  if (value <= 0) return "0 B";
-  const units = ["B", "KB", "MB", "GB", "TB"];
-  const index = Math.floor(Math.log(value) / Math.log(1024));
-  return `${(value / Math.pow(1024, index)).toFixed(1)} ${units[index]}`;
-}
-
-function getFileIcon(mimeType: string) {
-  if (mimeType.startsWith("image/")) return "🖼️";
-  if (mimeType.startsWith("video/")) return "🎬";
-  if (mimeType.startsWith("audio/")) return "🎵";
-  if (mimeType.includes("pdf")) return "📄";
-  if (mimeType.includes("word") || mimeType.includes("document")) return "📝";
-  return "📁";
-}
+import { formatBytes, getFileIcon } from "@/lib/utils";
 
 export default async function HomePage() {
   const userId = await getSessionUserId();

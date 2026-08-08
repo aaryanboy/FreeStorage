@@ -80,10 +80,13 @@ export async function getGoogleDriveClient(options?: {
     throw new Error("No active Google account found");
   }
 
+  const origin = process.env.NEXTAUTH_URL || "http://localhost:3000";
+  const redirectUri = `${origin}/api/auth/google/callback`;
+
   const oauth2Client = new google.auth.OAuth2(
     process.env.GOOGLE_CLIENT_ID,
     process.env.GOOGLE_CLIENT_SECRET,
-    "http://localhost:3000/api/auth/google/callback"
+    redirectUri
   );
 
   oauth2Client.setCredentials({

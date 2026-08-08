@@ -22,12 +22,9 @@ export async function GET(
     });
 
     if (!file) {
-      return new Response("File not found", {
-        status: 404,
-      });
+      return new Response("File not found", { status: 404 });
     }
 
-    // Verify ownership
     if (file.userId !== userId) {
       return new Response("Forbidden", { status: 403 });
     }
@@ -50,14 +47,14 @@ export async function GET(
       headers: {
         "Content-Type": file.mimeType,
         "Content-Length": file.size.toString(),
-        "Cache-Control": "private, max-age=3600",
+        "Content-Disposition": `attachment; filename*=UTF-8''${encodeURIComponent(
+          file.originalName
+        )}`,
+        "Cache-Control": "no-store",
       },
     });
   } catch (error) {
-    console.error("FILE PREVIEW ERROR:", error);
-
-    return new Response("Failed to load file", {
-      status: 500,
-    });
+    console.error("FILE DOWNLOAD ERROR:", error);
+    return new Response("Failed to download file", { status: 500 });
   }
 }

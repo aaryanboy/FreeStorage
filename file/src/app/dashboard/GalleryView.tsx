@@ -1,7 +1,8 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
+import { formatBytes, formatDate, getFileIcon } from "@/lib/utils";
 
 export type FileItem = {
   id: string;
@@ -14,38 +15,14 @@ export type FileItem = {
   googleAccount?: {
     email: string;
   };
+  driveFileId: string;
+  isExistingDriveFile?: boolean;
 };
 
 export type FolderItem = {
   id: string;
   name: string;
 };
-
-function formatBytes(bytes: string | number) {
-  const value = Number(bytes);
-  if (value <= 0) return "0 B";
-  const units = ["B", "KB", "MB", "GB", "TB"];
-  const i = Math.floor(Math.log(value) / Math.log(1024));
-  return `${(value / Math.pow(1024, i)).toFixed(1)} ${units[i]}`;
-}
-
-function formatDate(dateStr: string) {
-  return new Intl.DateTimeFormat("en-US", {
-    month: "short",
-    day: "numeric",
-    year: "numeric",
-  }).format(new Date(dateStr));
-}
-
-function getFileIcon(mimeType: string) {
-  if (mimeType.startsWith("image/")) return "🖼️";
-  if (mimeType.startsWith("video/")) return "🎬";
-  if (mimeType.startsWith("audio/")) return "🎵";
-  if (mimeType.includes("pdf")) return "📄";
-  if (mimeType.includes("word") || mimeType.includes("document")) return "📝";
-  if (mimeType.includes("sheet") || mimeType.includes("excel")) return "📊";
-  return "📁";
-}
 
 export default function GalleryView({
   initialFiles,
@@ -58,10 +35,18 @@ export default function GalleryView({
 }) {
   const router = useRouter();
 
+  // Tab state
+  const [activeTab, setActiveTab] = useState<"app" | "drive">("app");
+
+  // Files & Folders state
   const [files, setFiles] = useState<FileItem[]>(initialFiles);
   const [folders, setFolders] = useState<FolderItem[]>(initialFolders);
   const [viewMode, setViewMode] = useState<"grid" | "list">("grid");
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+
+  // Drive integration state
+  const [driveFiles, setDriveFiles] = useState<FileItem[]>([]);
+  const [loadingDrive, setLoadingDrive] = useState(false);
 
   // Modals
   const [lightboxIndex, setLightboxIndex] = useState<number | null>(null);
@@ -72,10 +57,36 @@ export default function GalleryView({
   const [isDeleting, setIsDeleting] = useState(false);
   const [folderError, setFolderError] = useState("");
 
+  // Upload modal state
+  const [isUploadModalOpen, setIsUploadModalOpen] = useState(false);
+  const [selectedUploadFiles, setSelectedUploadFiles] = useState<File[]>([]);
+  const [uploading, setUploading] = useState(false);
+  const [uploadProgressText, setUploadProgressText] = useState("");
+  const [uploadError, setUploadError] = useState("");
+
   const activeFolder = currentFolder || null;
 
+  // Fetch Drive integration files
+  useEffect(() => {
+    if (activeTab === "drive" && driveFiles.length === 0) {
+      setLoadingDrive(true);
+      fetch("/api/drive/files")
+        .then((res) => res.json())
+        .then((data) => {
+          if (data.success) {
+            setDriveFiles(data.files);
+          }
+        })
+        .catch(console.error)
+        .finally(() => setLoadingDrive(false));
+    }
+  }, [activeTab, driveFiles.length]);
+
   // Files in current view: root (folder === null) or inside a specific folder
-  const currentFiles = files.filter((f) => (f.folder || null) === activeFolder);
+  const displayedFiles =
+    activeTab === "app"
+      ? files.filter((f) => (f.folder || null) === activeFolder)
+      : driveFiles;
 
   // File counts per folder for display
   const folderFileCounts: Record<string, number> = {};
@@ -94,11 +105,67 @@ export default function GalleryView({
   }
 
   function selectAll() {
-    if (selectedIds.size === currentFiles.length) {
+    if (selectedIds.size === displayedFiles.length) {
       setSelectedIds(new Set());
     } else {
-      setSelectedIds(new Set(currentFiles.map((f) => f.id)));
+      setSelectedIds(new Set(displayedFiles.map((f) => f.id)));
     }
+  }
+
+  // ── Upload ──────────────────────────────────────────────────────────
+  async function handleUpload(e: React.FormEvent) {
+    e.preventDefault();
+    if (selectedUploadFiles.length === 0) return;
+    setUploading(true);
+    setUploadError("");
+
+    const uploadedItems: FileItem[] = [];
+
+    for (let i = 0; i < selectedUploadFiles.length; i++) {
+      const currentFile = selectedUploadFiles[i];
+      setUploadProgressText(`Uploading ${currentFile.name} (${i + 1} of ${selectedUploadFiles.length})...`);
+
+      const formData = new FormData();
+      formData.append("file", currentFile);
+      if (activeFolder) {
+        formData.append("folder", activeFolder);
+      }
+
+      try {
+        const res = await fetch("/api/upload", {
+          method: "POST",
+          body: formData,
+        });
+
+        const data = await res.json();
+        if (!res.ok) {
+          throw new Error(data.error || `Failed to upload ${currentFile.name}`);
+        }
+
+        const newFileItem: FileItem = {
+          id: data.file.id,
+          name: data.file.name,
+          originalName: data.file.originalName,
+          mimeType: data.file.mimeType,
+          size: data.file.size,
+          folder: data.file.folder,
+          createdAt: new Date().toISOString(),
+          driveFileId: data.file.driveFileId,
+        };
+        uploadedItems.push(newFileItem);
+      } catch (err: any) {
+        setUploadError(err.message || "Upload failed");
+        setUploading(false);
+        return;
+      }
+    }
+
+    // Prepend all successful uploads
+    setFiles((prev) => [...uploadedItems, ...prev]);
+    setIsUploadModalOpen(false);
+    setSelectedUploadFiles([]);
+    setUploadProgressText("");
+    router.refresh();
   }
 
   // ── Delete ──────────────────────────────────────────────────────────
@@ -188,14 +255,13 @@ export default function GalleryView({
   }
 
   // Media files for Lightbox
-  const mediaFiles = currentFiles.filter(
+  const mediaFiles = displayedFiles.filter(
     (f) => f.mimeType.startsWith("image/") || f.mimeType.startsWith("video/")
   );
   const currentLightboxFile = lightboxIndex !== null ? mediaFiles[lightboxIndex] : null;
 
   return (
     <div className="space-y-6">
-
       {/* ── Breadcrumb & View Controls ───────────────────────────────── */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-gray-200 pb-4">
         <div className="flex items-center gap-2 text-sm font-medium text-gray-700">
@@ -213,6 +279,13 @@ export default function GalleryView({
         </div>
 
         <div className="flex items-center gap-2.5">
+          <button
+            onClick={() => setIsUploadModalOpen(true)}
+            className="flex items-center gap-1.5 rounded-lg bg-black px-3.5 py-1.5 text-xs font-semibold text-white hover:bg-gray-800 transition-colors"
+          >
+            📤 Upload File
+          </button>
+
           <button
             onClick={() => { setMovingFileIds([]); setFolderError(""); setIsNewFolderModalOpen(true); }}
             className="flex items-center gap-1.5 rounded-lg border border-gray-200 bg-white px-3 py-1.5 text-xs font-semibold text-gray-700 hover:bg-gray-50 transition-colors"
@@ -241,8 +314,33 @@ export default function GalleryView({
         </div>
       </div>
 
-      {/* ── Folder Cards (only shown at root level) ──────────────────── */}
-      {!activeFolder && folders.length > 0 && (
+      {/* Tab Switcher */}
+      <div className="flex border-b border-gray-200">
+        <button
+          onClick={() => { setActiveTab("app"); setSelectedIds(new Set()); }}
+          className={`px-4 py-2.5 text-sm font-semibold border-b-2 transition-all ${
+            activeTab === "app"
+              ? "border-black text-black"
+              : "border-transparent text-gray-500 hover:text-gray-900"
+          }`}
+        >
+          📂 App Storage Files
+        </button>
+        <button
+          onClick={() => { setActiveTab("drive"); setSelectedIds(new Set()); }}
+          className={`px-4 py-2.5 text-sm font-semibold border-b-2 transition-all flex items-center gap-2 ${
+            activeTab === "drive"
+              ? "border-black text-black"
+              : "border-transparent text-gray-500 hover:text-gray-900"
+          }`}
+        >
+          ☁️ Google Drive Live Integration
+          {loadingDrive && <span className="animate-spin text-xs">🌀</span>}
+        </button>
+      </div>
+
+      {/* ── Folder Cards (only shown at root level for App Storage tab) ─ */}
+      {activeTab === "app" && !activeFolder && folders.length > 0 && (
         <div>
           <h3 className="text-xs font-semibold uppercase tracking-wider text-gray-400 mb-3">
             Folders ({folders.length})
@@ -268,7 +366,7 @@ export default function GalleryView({
       )}
 
       {/* ── Batch Action Bar ─────────────────────────────────────────── */}
-      {selectedIds.size > 0 && (
+      {activeTab === "app" && selectedIds.size > 0 && (
         <div className="sticky top-20 z-20 flex items-center justify-between rounded-xl bg-black px-5 py-3.5 text-white shadow-xl">
           <div className="flex items-center gap-3 text-sm">
             <span className="font-bold">{selectedIds.size} selected</span>
@@ -295,23 +393,28 @@ export default function GalleryView({
       )}
 
       {/* ── Gallery Content ──────────────────────────────────────────── */}
-      {currentFiles.length === 0 ? (
+      {loadingDrive ? (
+        <div className="flex flex-col items-center justify-center py-20 text-center">
+          <div className="animate-spin text-5xl">🌀</div>
+          <p className="mt-4 text-sm text-gray-500">Loading files live from your Google Drive accounts...</p>
+        </div>
+      ) : displayedFiles.length === 0 ? (
         <div className="flex flex-col items-center justify-center rounded-xl border border-dashed border-gray-300 bg-white py-20 text-center">
-          <div className="text-5xl">{activeFolder ? "📂" : "🖼️"}</div>
+          <div className="text-5xl">{activeFolder ? "📂" : "☁️"}</div>
           <h3 className="mt-4 text-base font-semibold text-gray-800">
             {activeFolder ? `"${activeFolder}" is empty` : "No files yet"}
           </h3>
           <p className="mt-1.5 text-sm text-gray-400">
-            {activeFolder ? "Move files into this folder from the main gallery." : "Upload files to populate your gallery."}
+            {activeFolder ? "Move files into this folder from the main gallery." : "Upload files or connect more Google Accounts."}
           </p>
-          <a href="/test-upload" className="mt-5 rounded-lg bg-black px-5 py-2.5 text-sm font-medium text-white hover:bg-gray-800 transition-colors">
+          <button onClick={() => setIsUploadModalOpen(true)} className="mt-5 rounded-lg bg-black px-5 py-2.5 text-sm font-medium text-white hover:bg-gray-800 transition-colors">
             Upload File
-          </a>
+          </button>
         </div>
       ) : viewMode === "grid" ? (
         /* ── GRID VIEW ───────────────────────────────────────────────── */
         <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-4">
-          {currentFiles.map((file) => {
+          {displayedFiles.map((file) => {
             const isSelected = selectedIds.has(file.id);
             const isImage = file.mimeType.startsWith("image/");
             const isVideo = file.mimeType.startsWith("video/");
@@ -325,23 +428,25 @@ export default function GalleryView({
                   isSelected ? "border-black ring-2 ring-black" : "border-gray-200"
                 }`}
               >
-                {/* Checkbox */}
-                <div
-                  onClick={(e) => toggleSelect(file.id, e)}
-                  className={`absolute top-2.5 left-2.5 z-10 flex h-6 w-6 items-center justify-center rounded-md border text-xs font-bold transition-all ${
-                    isSelected
-                      ? "bg-black border-black text-white opacity-100"
-                      : "border-gray-300 bg-white/80 text-transparent group-hover:opacity-100 opacity-0 hover:border-black"
-                  }`}
-                >
-                  ✓
-                </div>
+                {/* Checkbox (App Tab only) */}
+                {activeTab === "app" && (
+                  <div
+                    onClick={(e) => toggleSelect(file.id, e)}
+                    className={`absolute top-2.5 left-2.5 z-10 flex h-6 w-6 items-center justify-center rounded-md border text-xs font-bold transition-all ${
+                      isSelected
+                        ? "bg-black border-black text-white opacity-100"
+                        : "border-gray-300 bg-white/80 text-transparent group-hover:opacity-100 opacity-0 hover:border-black"
+                    }`}
+                  >
+                    ✓
+                  </div>
+                )}
 
                 {/* Preview */}
                 <div className="relative aspect-square w-full overflow-hidden bg-gray-100">
                   {isImage ? (
                     <img
-                      src={`/api/files/${file.id}/preview`}
+                      src={file.isExistingDriveFile ? `https://lh3.googleusercontent.com/d/${file.driveFileId}=s220` : `/api/files/${file.id}/preview`}
                       alt={file.originalName}
                       className="h-full w-full object-cover group-hover:scale-105 transition-transform duration-300"
                       loading="lazy"
@@ -362,18 +467,40 @@ export default function GalleryView({
 
                   {/* Hover Actions */}
                   <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center gap-2 p-2">
-                    <button
-                      onClick={(e) => { e.stopPropagation(); setMovingFileIds([file.id]); setIsMoveModalOpen(true); }}
-                      className="rounded-lg bg-white/90 p-2 text-xs font-semibold text-gray-900 hover:bg-white transition-colors"
-                    >
-                      ✂️ Move
-                    </button>
-                    <button
-                      onClick={(e) => { e.stopPropagation(); handleDeleteFile(file.id); }}
-                      className="rounded-lg bg-red-600/90 p-2 text-xs font-semibold text-white hover:bg-red-600 transition-colors"
-                    >
-                      🗑️
-                    </button>
+                    {file.isExistingDriveFile ? (
+                      <a
+                        href={`https://drive.google.com/file/d/${file.driveFileId}/view?usp=drivesdk`}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="rounded-lg bg-white/90 px-3 py-2 text-xs font-semibold text-gray-900 hover:bg-white transition-colors"
+                      >
+                        🔗 Drive
+                      </a>
+                    ) : (
+                      <>
+                        <a
+                          href={`/api/files/${file.id}/download`}
+                          download
+                          onClick={(e) => e.stopPropagation()}
+                          className="rounded-lg bg-white/90 p-2 text-xs font-semibold text-gray-900 hover:bg-white transition-colors"
+                          title="Download"
+                        >
+                          ⬇️
+                        </a>
+                        <button
+                          onClick={(e) => { e.stopPropagation(); setMovingFileIds([file.id]); setIsMoveModalOpen(true); }}
+                          className="rounded-lg bg-white/90 p-2 text-xs font-semibold text-gray-900 hover:bg-white transition-colors"
+                        >
+                          ✂️
+                        </button>
+                        <button
+                          onClick={(e) => { e.stopPropagation(); handleDeleteFile(file.id); }}
+                          className="rounded-lg bg-red-600/90 p-2 text-xs font-semibold text-white hover:bg-red-600 transition-colors"
+                        >
+                          🗑️
+                        </button>
+                      </>
+                    )}
                   </div>
                 </div>
 
@@ -384,9 +511,14 @@ export default function GalleryView({
                   </p>
                   <div className="mt-1 flex items-center justify-between text-[10px] text-gray-400">
                     <span>{formatBytes(file.size)}</span>
-                    {file.folder && (
+                    {activeTab === "app" && file.folder && (
                       <span className="rounded bg-gray-100 px-1.5 py-0.5 text-gray-600 font-medium">
                         📁 {file.folder}
+                      </span>
+                    )}
+                    {activeTab === "drive" && file.googleAccount && (
+                      <span className="rounded bg-blue-50 px-1.5 py-0.5 text-blue-600 font-medium truncate max-w-[80px]">
+                        {file.googleAccount.email.split("@")[0]}
                       </span>
                     )}
                   </div>
@@ -399,35 +531,53 @@ export default function GalleryView({
         /* ── LIST VIEW ───────────────────────────────────────────────── */
         <div className="overflow-hidden rounded-xl border border-gray-200 bg-white shadow-sm">
           <div className="grid grid-cols-[auto_2fr_1fr_1fr_1fr_auto] gap-4 border-b border-gray-100 px-5 py-3 text-xs font-medium uppercase tracking-wide text-gray-400">
-            <input type="checkbox" checked={selectedIds.size === currentFiles.length && currentFiles.length > 0} onChange={selectAll} className="rounded border-gray-300" />
+            {activeTab === "app" ? (
+              <input type="checkbox" checked={selectedIds.size === displayedFiles.length && displayedFiles.length > 0} onChange={selectAll} className="rounded border-gray-300" />
+            ) : (
+              <span className="w-4" />
+            )}
             <span>Name</span>
-            <span>Folder</span>
+            <span>{activeTab === "app" ? "Folder" : "Gmail Account"}</span>
             <span>Size</span>
             <span>Uploaded</span>
             <span>Actions</span>
           </div>
           <div className="divide-y divide-gray-50">
-            {currentFiles.map((file) => {
+            {displayedFiles.map((file) => {
               const isSelected = selectedIds.has(file.id);
               return (
                 <div key={file.id} className={`grid grid-cols-[auto_2fr_1fr_1fr_1fr_auto] gap-4 items-center px-5 py-3.5 hover:bg-gray-50 transition-colors ${isSelected ? "bg-gray-50" : ""}`}>
-                  <input type="checkbox" checked={isSelected} onChange={() => toggleSelect(file.id)} className="rounded border-gray-300" />
+                  {activeTab === "app" ? (
+                    <input type="checkbox" checked={isSelected} onChange={() => toggleSelect(file.id)} className="rounded border-gray-300" />
+                  ) : (
+                    <span className="w-4" />
+                  )}
                   <div className="flex min-w-0 items-center gap-3">
                     <div className="h-9 w-9 shrink-0 overflow-hidden rounded-lg bg-gray-100">
                       {file.mimeType.startsWith("image/") ? (
-                        <img src={`/api/files/${file.id}/preview`} alt={file.originalName} className="h-full w-full object-cover" />
+                        <img src={file.isExistingDriveFile ? `https://lh3.googleusercontent.com/d/${file.driveFileId}=s220` : `/api/files/${file.id}/preview`} alt={file.originalName} className="h-full w-full object-cover" />
                       ) : (
                         <div className="flex h-full w-full items-center justify-center text-lg">{getFileIcon(file.mimeType)}</div>
                       )}
                     </div>
                     <span className="truncate text-sm font-medium text-gray-900">{file.originalName}</span>
                   </div>
-                  <span className="text-xs text-gray-500">{file.folder ? `📁 ${file.folder}` : "—"}</span>
+                  <span className="text-xs text-gray-500">
+                    {activeTab === "app" ? (file.folder ? `📁 ${file.folder}` : "—") : (file.googleAccount?.email || "—")}
+                  </span>
                   <span className="text-xs text-gray-600">{formatBytes(file.size)}</span>
                   <span className="text-xs text-gray-400">{formatDate(file.createdAt)}</span>
                   <div className="flex items-center gap-2">
-                    <button onClick={() => { setMovingFileIds([file.id]); setIsMoveModalOpen(true); }} className="rounded p-1.5 text-xs text-gray-500 hover:bg-gray-200 hover:text-gray-900">✂️</button>
-                    <button onClick={() => handleDeleteFile(file.id)} className="rounded p-1.5 text-xs text-red-500 hover:bg-red-50 hover:text-red-700">🗑️</button>
+                    {file.isExistingDriveFile ? (
+                      <a href={`https://drive.google.com/file/d/${file.driveFileId}/view?usp=drivesdk`} target="_blank" rel="noreferrer" className="rounded p-1.5 text-xs text-gray-500 hover:bg-gray-200 hover:text-gray-900" title="Open in Drive">🔗</a>
+                    ) : (
+                      <>
+                        <a href={`/api/files/${file.id}/download`} download className="rounded p-1.5 text-xs text-gray-500 hover:bg-gray-200 hover:text-gray-900" title="Download">⬇️</a>
+                        <a href={`https://drive.google.com/file/d/${file.driveFileId}/view?usp=drivesdk`} target="_blank" rel="noreferrer" className="rounded p-1.5 text-xs text-gray-500 hover:bg-gray-200 hover:text-gray-900" title="Open in Drive">🔗</a>
+                        <button onClick={() => { setMovingFileIds([file.id]); setIsMoveModalOpen(true); }} className="rounded p-1.5 text-xs text-gray-500 hover:bg-gray-200 hover:text-gray-900" title="Move">✂️</button>
+                        <button onClick={() => handleDeleteFile(file.id)} className="rounded p-1.5 text-xs text-red-500 hover:bg-red-50 hover:text-red-700" title="Delete">🗑️</button>
+                      </>
+                    )}
                   </div>
                 </div>
               );
@@ -448,9 +598,9 @@ export default function GalleryView({
 
           <div onClick={(e) => e.stopPropagation()} className="flex max-h-[85vh] max-w-[90vw] flex-col items-center justify-center">
             {currentLightboxFile.mimeType.startsWith("image/") ? (
-              <img src={`/api/files/${currentLightboxFile.id}/preview`} alt={currentLightboxFile.originalName} className="max-h-[75vh] max-w-full rounded-lg object-contain shadow-2xl" />
+              <img src={currentLightboxFile.isExistingDriveFile ? `https://lh3.googleusercontent.com/d/${currentLightboxFile.driveFileId}=s800` : `/api/files/${currentLightboxFile.id}/preview`} alt={currentLightboxFile.originalName} className="max-h-[75vh] max-w-full rounded-lg object-contain shadow-2xl" />
             ) : (
-              <video controls autoPlay src={`/api/files/${currentLightboxFile.id}/preview`} className="max-h-[75vh] max-w-full rounded-lg shadow-2xl" />
+              <video controls autoPlay src={currentLightboxFile.isExistingDriveFile ? `https://drive.google.com/file/d/${currentLightboxFile.driveFileId}/view` : `/api/files/${currentLightboxFile.id}/preview`} className="max-h-[75vh] max-w-full rounded-lg shadow-2xl" />
             )}
 
             <div className="mt-4 flex items-center justify-between w-full max-w-2xl bg-white/10 backdrop-blur-md px-5 py-3 rounded-xl text-white">
@@ -459,10 +609,21 @@ export default function GalleryView({
                 <p className="text-xs text-gray-400">{formatBytes(currentLightboxFile.size)} · {currentLightboxFile.mimeType}</p>
               </div>
               <div className="flex items-center gap-3">
-                <button onClick={() => { setMovingFileIds([currentLightboxFile.id]); setIsMoveModalOpen(true); }}
-                  className="rounded-lg bg-white/20 px-3 py-1.5 text-xs font-semibold hover:bg-white/30">✂️ Move</button>
-                <button onClick={() => handleDeleteFile(currentLightboxFile.id)}
-                  className="rounded-lg bg-red-600 px-3 py-1.5 text-xs font-semibold hover:bg-red-700">🗑️ Delete</button>
+                {currentLightboxFile.isExistingDriveFile ? (
+                  <a href={`https://drive.google.com/file/d/${currentLightboxFile.driveFileId}/view?usp=drivesdk`} target="_blank" rel="noreferrer"
+                    className="rounded-lg bg-white/20 px-3 py-1.5 text-xs font-semibold hover:bg-white/30 text-white">🔗 Open in Drive</a>
+                ) : (
+                  <>
+                    <a href={`/api/files/${currentLightboxFile.id}/download`} download
+                      className="rounded-lg bg-indigo-600 px-3 py-1.5 text-xs font-semibold hover:bg-indigo-700 text-white">⬇️ Download</a>
+                    <a href={`https://drive.google.com/file/d/${currentLightboxFile.driveFileId}/view?usp=drivesdk`} target="_blank" rel="noreferrer"
+                      className="rounded-lg bg-white/20 px-3 py-1.5 text-xs font-semibold hover:bg-white/30 text-white">🔗 Open in Drive</a>
+                    <button onClick={() => { setMovingFileIds([currentLightboxFile.id]); setIsMoveModalOpen(true); }}
+                      className="rounded-lg bg-white/20 px-3 py-1.5 text-xs font-semibold hover:bg-white/30">✂️ Move</button>
+                    <button onClick={() => handleDeleteFile(currentLightboxFile.id)}
+                      className="rounded-lg bg-red-600 px-3 py-1.5 text-xs font-semibold hover:bg-red-700">🗑️ Delete</button>
+                  </>
+                )}
               </div>
             </div>
           </div>
@@ -471,6 +632,72 @@ export default function GalleryView({
             <button onClick={(e) => { e.stopPropagation(); setLightboxIndex((p) => p !== null ? (p + 1) % mediaFiles.length : 0); }}
               className="absolute right-4 z-10 flex h-12 w-12 items-center justify-center rounded-full bg-white/10 text-2xl text-white hover:bg-white/20">›</button>
           )}
+        </div>
+      )}
+
+      {/* ── UPLOAD MODAL ─────────────────────────────────────────────── */}
+      {isUploadModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" onClick={() => setIsUploadModalOpen(false)}>
+          <div onClick={(e) => e.stopPropagation()} className="w-full max-w-md rounded-2xl bg-white p-6 shadow-xl">
+            <h3 className="text-lg font-bold text-gray-900">Upload Files</h3>
+            <p className="mt-1 text-xs text-gray-500">
+              {activeFolder ? `Upload to folder: ${activeFolder}` : "Upload to root folder"}
+            </p>
+
+            <form onSubmit={handleUpload} className="mt-4 space-y-4">
+              <div className="border-2 border-dashed border-gray-300 rounded-xl p-6 flex flex-col items-center justify-center text-center cursor-pointer hover:border-black transition-all bg-gray-50 relative">
+                <input
+                  type="file"
+                  required
+                  multiple
+                  onChange={(e) => {
+                    const filesList = Array.from(e.target.files || []);
+                    setSelectedUploadFiles(filesList);
+                    setUploadError("");
+                  }}
+                  className="absolute inset-0 opacity-0 cursor-pointer w-full h-full"
+                />
+                <span className="text-4xl mb-2">📁</span>
+                <span className="text-sm font-semibold text-gray-800">
+                  {selectedUploadFiles.length > 0 
+                    ? `${selectedUploadFiles.length} file(s) selected` 
+                    : "Drag & Drop or Click to Choose Files"}
+                </span>
+                <span className="text-xs text-gray-400 mt-1 max-w-[280px] truncate">
+                  {selectedUploadFiles.length > 0 
+                    ? selectedUploadFiles.map(f => f.name).join(", ") 
+                    : "Any standard documents, photos, videos, or audio"}
+                </span>
+              </div>
+
+              {uploadProgressText && (
+                <div className="bg-blue-50 border border-blue-200 rounded-lg p-3 text-xs text-blue-700 flex items-center gap-2">
+                  <span className="animate-spin text-sm">🌀</span>
+                  <span>{uploadProgressText}</span>
+                </div>
+              )}
+
+              {uploadError && <p className="text-xs text-red-500">{uploadError}</p>}
+
+              <div className="flex justify-end gap-3 pt-2">
+                <button
+                  type="button"
+                  onClick={() => setIsUploadModalOpen(false)}
+                  className="rounded-lg border border-gray-200 px-4 py-2 text-xs font-medium text-gray-600 hover:bg-gray-50"
+                  disabled={uploading}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  className="rounded-lg bg-black px-4 py-2 text-xs font-medium text-white hover:bg-gray-800 disabled:opacity-50"
+                  disabled={uploading || selectedUploadFiles.length === 0}
+                >
+                  {uploading ? "Uploading..." : "Start Upload"}
+                </button>
+              </div>
+            </form>
+          </div>
         </div>
       )}
 

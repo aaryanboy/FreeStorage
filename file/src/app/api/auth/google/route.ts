@@ -1,11 +1,14 @@
 import { google } from "googleapis";
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 
-export async function GET() {
+export async function GET(req: NextRequest) {
+  const origin = process.env.NEXTAUTH_URL || new URL(req.url).origin;
+  const redirectUri = `${origin}/api/auth/google/callback`;
+
   const oauth2Client = new google.auth.OAuth2(
     process.env.GOOGLE_CLIENT_ID,
     process.env.GOOGLE_CLIENT_SECRET,
-    "http://localhost:3000/api/auth/google/callback"
+    redirectUri
   );
 
   const url = oauth2Client.generateAuthUrl({
