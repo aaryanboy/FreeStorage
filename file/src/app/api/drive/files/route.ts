@@ -1,9 +1,22 @@
-import { NextRequest, NextResponse } from "next/server";
+import { NextResponse } from "next/server";
 import { getGoogleDriveClient } from "@/lib/googleDrive";
 import { getSessionUserId } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 
-export async function GET(req: NextRequest) {
+type DriveFileItem = {
+  id: string;
+  name: string | null | undefined;
+  originalName: string;
+  mimeType: string;
+  size: string;
+  createdAt: string | null | undefined;
+  googleAccount: { email: string };
+  driveFileId: string | null | undefined;
+  webViewLink: string | null | undefined;
+  isExistingDriveFile: true;
+};
+
+export async function GET() {
   try {
     const userId = await getSessionUserId();
     if (!userId) {
@@ -18,7 +31,7 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ success: true, files: [] });
     }
 
-    const allDriveFiles: any[] = [];
+    const allDriveFiles: DriveFileItem[] = [];
 
     for (const account of accounts) {
       try {
@@ -32,7 +45,7 @@ export async function GET(req: NextRequest) {
         const files = response.data.files || [];
         for (const file of files) {
           allDriveFiles.push({
-            id: `drive-${file.id}`, // prefix to avoid collisions with DB ids
+            id: `drive-${account.id}-${file.id}`, // unique per (account, file) pair
             name: file.name,
             originalName: file.name || "Untitled File",
             mimeType: file.mimeType || "application/octet-stream",

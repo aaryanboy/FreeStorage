@@ -46,7 +46,8 @@ export default function GalleryView({
 
   // Drive integration state
   const [driveFiles, setDriveFiles] = useState<FileItem[]>([]);
-  const [loadingDrive, setLoadingDrive] = useState(false);
+  const [driveFilesLoaded, setDriveFilesLoaded] = useState(false);
+  const loadingDrive = activeTab === "drive" && !driveFilesLoaded;
 
   // Modals
   const [lightboxIndex, setLightboxIndex] = useState<number | null>(null);
@@ -68,19 +69,27 @@ export default function GalleryView({
 
   // Fetch Drive integration files
   useEffect(() => {
-    if (activeTab === "drive" && driveFiles.length === 0) {
-      setLoadingDrive(true);
-      fetch("/api/drive/files")
-        .then((res) => res.json())
-        .then((data) => {
-          if (data.success) {
-            setDriveFiles(data.files);
-          }
-        })
-        .catch(console.error)
-        .finally(() => setLoadingDrive(false));
-    }
-  }, [activeTab, driveFiles.length]);
+    if (activeTab !== "drive" || driveFilesLoaded) return;
+
+    let cancelled = false;
+
+    fetch("/api/drive/files")
+      .then((res) => res.json())
+      .then((data) => {
+        if (cancelled) return;
+        if (data.success) {
+          setDriveFiles(data.files);
+        }
+      })
+      .catch(console.error)
+      .finally(() => {
+        if (!cancelled) setDriveFilesLoaded(true);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [activeTab, driveFilesLoaded]);
 
   // Files in current view: root (folder === null) or inside a specific folder
   const displayedFiles =
@@ -99,7 +108,11 @@ export default function GalleryView({
     e?.stopPropagation();
     setSelectedIds((prev) => {
       const next = new Set(prev);
-      next.has(id) ? next.delete(id) : next.add(id);
+      if (next.has(id)) {
+        next.delete(id);
+      } else {
+        next.add(id);
+      }
       return next;
     });
   }
@@ -153,8 +166,9 @@ export default function GalleryView({
           driveFileId: data.file.driveFileId,
         };
         uploadedItems.push(newFileItem);
-      } catch (err: any) {
-        setUploadError(err.message || "Upload failed");
+      } catch (err) {
+        const message = err instanceof Error ? err.message : "Upload failed";
+        setUploadError(message);
         setUploading(false);
         return;
       }
@@ -445,6 +459,7 @@ export default function GalleryView({
                 {/* Preview */}
                 <div className="relative aspect-square w-full overflow-hidden bg-gray-100">
                   {isImage ? (
+                    // eslint-disable-next-line @next/next/no-img-element -- dynamic, hotlinked Drive/API image, dimensions unknown ahead of time
                     <img
                       src={file.isExistingDriveFile ? `https://lh3.googleusercontent.com/d/${file.driveFileId}=s220` : `/api/files/${file.id}/preview`}
                       alt={file.originalName}
@@ -517,7 +532,7 @@ export default function GalleryView({
                       </span>
                     )}
                     {activeTab === "drive" && file.googleAccount && (
-                      <span className="rounded bg-blue-50 px-1.5 py-0.5 text-blue-600 font-medium truncate max-w-[80px]">
+                      <span className="rounded bg-blue-50 px-1.5 py-0.5 text-blue-600 font-medium truncate max-w-20">
                         {file.googleAccount.email.split("@")[0]}
                       </span>
                     )}
@@ -555,6 +570,7 @@ export default function GalleryView({
                   <div className="flex min-w-0 items-center gap-3">
                     <div className="h-9 w-9 shrink-0 overflow-hidden rounded-lg bg-gray-100">
                       {file.mimeType.startsWith("image/") ? (
+                        // eslint-disable-next-line @next/next/no-img-element -- dynamic, hotlinked Drive/API image, dimensions unknown ahead of time
                         <img src={file.isExistingDriveFile ? `https://lh3.googleusercontent.com/d/${file.driveFileId}=s220` : `/api/files/${file.id}/preview`} alt={file.originalName} className="h-full w-full object-cover" />
                       ) : (
                         <div className="flex h-full w-full items-center justify-center text-lg">{getFileIcon(file.mimeType)}</div>
@@ -598,6 +614,7 @@ export default function GalleryView({
 
           <div onClick={(e) => e.stopPropagation()} className="flex max-h-[85vh] max-w-[90vw] flex-col items-center justify-center">
             {currentLightboxFile.mimeType.startsWith("image/") ? (
+              // eslint-disable-next-line @next/next/no-img-element -- dynamic, hotlinked Drive/API image with unknown aspect ratio, rendered at variable size
               <img src={currentLightboxFile.isExistingDriveFile ? `https://lh3.googleusercontent.com/d/${currentLightboxFile.driveFileId}=s800` : `/api/files/${currentLightboxFile.id}/preview`} alt={currentLightboxFile.originalName} className="max-h-[75vh] max-w-full rounded-lg object-contain shadow-2xl" />
             ) : (
               <video controls autoPlay src={currentLightboxFile.isExistingDriveFile ? `https://drive.google.com/file/d/${currentLightboxFile.driveFileId}/view` : `/api/files/${currentLightboxFile.id}/preview`} className="max-h-[75vh] max-w-full rounded-lg shadow-2xl" />
@@ -663,7 +680,7 @@ export default function GalleryView({
                     ? `${selectedUploadFiles.length} file(s) selected` 
                     : "Drag & Drop or Click to Choose Files"}
                 </span>
-                <span className="text-xs text-gray-400 mt-1 max-w-[280px] truncate">
+                <span className="text-xs text-gray-400 mt-1 max-w-70 truncate">
                   {selectedUploadFiles.length > 0 
                     ? selectedUploadFiles.map(f => f.name).join(", ") 
                     : "Any standard documents, photos, videos, or audio"}
