@@ -13,7 +13,8 @@ model User {
   name      String?
   createdAt DateTime @default(now())
 
-  files File[]
+  files          File[]
+  googleAccounts GoogleAccount[]
 }
 
 model GoogleAccount {
@@ -32,6 +33,9 @@ model GoogleAccount {
 
   isActive Boolean @default(true)
   priority Int     @default(1)
+
+  userId String
+  user   User   @relation(fields: [userId], references: [id])
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
